@@ -1,38 +1,41 @@
-// Vercel Serverless Function: 診断API
-const { OpenAI } = require('openai')
+// Vercel Serverless Function: 診断API (ESM)
+// package.json に "type": "module" がある前提
+import { OpenAI } from "openai";
 
-module.exports = async (req, res) => {
+export default async function handler(req, res) {
   // CORS設定
-  res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  // OPTIONSリクエストの処理
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end()
+  // OPTIONSリクエストの処理（Preflight）
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
   }
 
   // POSTのみ許可
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' })
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
-    const { answers } = req.body
+    const { answers } = req.body ?? {};
 
     // バリデーション
     if (!Array.isArray(answers) || answers.length === 0) {
-      return res.status(400).json({ error: 'answersは配列で、最低1つは必要です' })
+      return res
+        .status(400)
+        .json({ error: "answersは配列で、最低1つは必要です" });
     }
 
     // OpenAI APIキーの確認
-    const apiKey = process.env.OPENAI_API_KEY
+    const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      return res.status(500).json({ error: 'OPENAI_API_KEYが設定されていません' })
+      return res.status(500).json({ error: "OPENAI_API_KEYが設定されていません" });
     }
 
-    // OpenAIクライアントの初期化
-    const openai = new OpenAI({ apiKey })
+    // OpenAIクライアント初期化
+    const openai = new OpenAI({ apiKey });
 
     // システムプロンプト
     const systemPrompt = `【役割】
@@ -82,77 +85,71 @@ module.exports = async (req, res) => {
 【その他】
 ・テンプレをなぞるだけでなく、必ずユーザーの回答内容（エピソード・口調）を反映した文章にすること。
 ・単なる性格診断にならないよう、「働き方」「キャリアの選び方」に結びつけること。
-・JSON以外のテキストは一切含めないでください。`
+・JSON以外のテキストは一切含めないでください。`;
 
     // ユーザーの回答を結合
     const combinedText = answers
       .map((answer, index) => `質問${index + 1}: ${answer}`)
-      .join('\n\n')
+      .join("\n\n");
 
     // OpenAI API呼び出し
     const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: "gpt-4o-mini",
       messages: [
-        { role: 'system', content: systemPrompt },
+        { role: "system", content: systemPrompt },
         {
-          role: 'user',
-          content: `以下がユーザーの診断回答です。これをもとに診断結果をJSON形式で出してください。\n\n${combinedText}`,
+          role: "user",
+          content:
+            `以下がユーザーの診断回答です。これをもとに診断結果をJSON形式で出してください。\n\n${combinedText}`,
         },
       ],
       temperature: 0.7,
-    })
+    });
 
-    const aiResponse = completion.choices[0]?.message?.content || ''
+    const aiResponse = completion.choices?.[0]?.message?.content ?? "";
+    if (!aiResponse) throw new Error("AIからの応答が空でした");
 
-    if (!aiResponse) {
-      throw new Error('AIからの応答が空でした')
-    }
-
-    // JSONを抽出してパース
-    let diagnosisData
+    // JSON抽出→パース
+    let diagnosisData;
     try {
-      // まず、そのままパースを試みる
-      diagnosisData = JSON.parse(aiResponse)
-    } catch (parseError) {
-      // JSON以外のテキストが含まれている場合、JSON部分を抽出
-      const jsonMatch = aiResponse.match(/\{[\s\S]*\}/)
-      if (jsonMatch) {
-        try {
-          diagnosisData = JSON.parse(jsonMatch[0])
-        } catch (extractError) {
-          console.error('JSON抽出エラー:', extractError)
-          console.error('AI応答:', aiResponse)
-          throw new Error('AIからの応答をJSONとして解析できませんでした')
-        }
-      } else {
-        console.error('JSONが見つかりませんでした')
-        console.error('AI応答:', aiResponse)
-        throw new Error('AIからの応答にJSONが見つかりませんでした')
+      diagnosisData = JSON.parse(aiResponse);
+    } catch {
+      const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        console.error("JSONが見つかりませんでした");
+        console.error("AI応答:", aiResponse);
+        throw new Error("AIからの応答にJSONが見つかりませんでした");
+      }
+      try {
+        diagnosisData = JSON.parse(jsonMatch[0]);
+      } catch (e) {
+        console.error("JSON抽出エラー:", e);
+        console.error("AI応答:", aiResponse);
+        throw new Error("AIからの応答をJSONとして解析できませんでした");
       }
     }
 
-    // レスポンス形式の検証
+    // 形式チェック
     if (
-      !diagnosisData.type ||
-      !diagnosisData.scores ||
-      typeof diagnosisData.scores !== 'object' ||
-      !diagnosisData.summary ||
-      !diagnosisData.nextAdvice ||
-      !diagnosisData.consultStyle ||
-      !diagnosisData.consultStyle.tone ||
-      !Array.isArray(diagnosisData.consultStyle.priorities) ||
-      !Array.isArray(diagnosisData.consultStyle.taboo)
+      !diagnosisData?.type ||
+      !diagnosisData?.scores ||
+      typeof diagnosisData.scores !== "object" ||
+      !diagnosisData?.summary ||
+      !diagnosisData?.nextAdvice ||
+      !diagnosisData?.consultStyle ||
+      !diagnosisData?.consultStyle?.tone ||
+      !Array.isArray(diagnosisData?.consultStyle?.priorities) ||
+      !Array.isArray(diagnosisData?.consultStyle?.taboo)
     ) {
-      console.error('不正なレスポンス形式:', diagnosisData)
-      throw new Error('AIからの応答の形式が正しくありません')
+      console.error("不正なレスポンス形式:", diagnosisData);
+      throw new Error("AIからの応答の形式が正しくありません");
     }
 
-    res.status(200).json(diagnosisData)
+    return res.status(200).json(diagnosisData);
   } catch (error) {
-    console.error('❌ 診断モード API error:', error)
-    res.status(500).json({
-      error: error.message || 'Internal server error',
-    })
+    console.error("❌ 診断モード API error:", error);
+    return res.status(500).json({
+      error: error?.message || "Internal server error",
+    });
   }
 }
-
