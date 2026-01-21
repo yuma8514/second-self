@@ -2,11 +2,10 @@
 // 定数
 // ============================================================================
 
-// 診断は別の関数で /api/diagnosis を叩いている前提
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:3001'
-const DIAGNOSIS_API_ENDPOINT = `${API_BASE}/api/diagnosis`
-const CONSULT_API_ENDPOINT = `${API_BASE}/api/consult`
-const STORAGE_KEY_CONVERSATION_ID = 'second-self-conversation-id'
+// Vercel Serverless Functionsを使用
+const CONSULT_API_ENDPOINT = '/api/consult'
+const DIAGNOSIS_API_ENDPOINT = '/api/diagnosis'
+
 
 // 診断フォームの質問と回答例
 const DIAGNOSIS_QUESTIONS = [
@@ -47,7 +46,7 @@ const DIAGNOSIS_QUESTIONS = [
     example: '例）長時間労働、厳しいノルマ、人間関係が複雑 など'
   },
   {
-    question: 'これまでの経験で、「続かなかった理由」や「続いた理由」があれば教えてください。',
+    question: 'これまでの仕事や業務経験で、「続かなかった理由」や「続いた理由」があれば教えてください。',
     example: '例）忙しすぎて無理だった、自由度が高い職場は合っていた など'
   }
 ]
@@ -73,6 +72,7 @@ const state = {
   isLoading: false,
   currentConversationId: null,
   mode: 'diagnosis', // 'diagnosis' | 'consult'
+  diagnosis: null, // 診断結果を保存
 }
 
 // ============================================================================
@@ -95,6 +95,7 @@ function startNewConversation() {
   localStorage.setItem(STORAGE_KEY_CONVERSATION_ID, newConversationId)
   state.currentConversationId = newConversationId
   state.mode = 'diagnosis'
+  state.diagnosis = null // 診断結果をリセット
   
   // 画面をクリア
   clearMessages()
@@ -376,14 +377,19 @@ async function saveMessage(conversationId, role, content) {
 }
 
 async function callAI(message, conversationId) {
+  // 診断結果がなければエラー
+  if (!state.diagnosis) {
+    throw new Error('診断結果がありません。先に診断を完了してください。')
+  }
+
   const response = await fetch(CONSULT_API_ENDPOINT, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
+      diagnosis: state.diagnosis,
       message,
-      conversationId,
     }),
   })
 
@@ -525,6 +531,41 @@ function setupEventListeners() {
 // 診断機能
 // ============================================================================
 
+function formatDiagnosisResult(data) {
+  const { type, scores, summary, nextAdvice, consultStyle } = data
+
+  let text = `【診断結果】\n\n`
+  text += `タイプ: ${type}\n\n`
+
+  text += `スコア一覧（自分のタイプを数字で把握）\n`
+  Object.entries(scores).forEach(([key, value]) => {
+    text += `${key}: ${value}％\n`
+  })
+  text += `\n`
+
+  text += `あなたはこんな人です（自分の全体像をつかむ）\n`
+  text += `${summary}\n\n`
+
+  text += `あなたに合った働き方（方向性の理解）\n`
+  consultStyle.priorities.forEach((priority) => {
+    text += `- ${priority}\n`
+  })
+  text += `\n`
+
+  text += `あなたに合わない働き方（避けるべき誤り）\n`
+  consultStyle.taboo.forEach((taboo) => {
+    text += `- ${taboo}\n`
+  })
+  text += `\n`
+
+  text += `ひとことアドバイス（感情に寄り添う）\n`
+  text += `${nextAdvice}\n\n`
+
+  text += `相談時のトーン: ${consultStyle.tone}`
+
+  return text
+}
+
 async function sendDiagnosis(answers) {
   if (!state.currentConversationId) {
     showError('会話IDが設定されていません')
@@ -539,7 +580,6 @@ async function sendDiagnosis(answers) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        conversationId: state.currentConversationId,
         answers,
       }),
     })
@@ -549,10 +589,15 @@ async function sendDiagnosis(answers) {
       throw new Error(data.error || '診断の取得に失敗しました')
     }
 
-    const data = await res.json()
-    const diagnosisText = data.diagnosis
+    const diagnosisData = await res.json()
 
-    // Supabase に保存して表示
+    // 診断結果をstateに保存
+    state.diagnosis = diagnosisData
+
+    // 診断結果を整形して表示用テキストに変換
+    const diagnosisText = formatDiagnosisResult(diagnosisData)
+
+    // 診断結果を表示
     const aiMsgData = await saveMessage(
       state.currentConversationId,
       'ai',
