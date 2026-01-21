@@ -1,32 +1,37 @@
-// Vercel Serverless Function: 相談API
-const { OpenAI } = require('openai')
+// Vercel Serverless Function: 相談API (ESM)
+// package.json に "type": "module" がある前提
+import { OpenAI } from "openai";
 
-module.exports = async (req, res) => {
-  // CORS設定
-  res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+export default async function handler(req, res) {
+  // CORS
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  // OPTIONSリクエストの処理
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end()
+  // Preflight
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
   }
 
-  // POSTのみ許可
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' })
+  // POST only
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
-    const { diagnosis, message } = req.body
+    // Vercel 環境だと req.body が object のことが多いけど、念のため両対応
+    const body =
+      typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body ?? {});
 
-    // バリデーション
-    if (!message || typeof message !== 'string') {
-      return res.status(400).json({ error: 'messageが必要です' })
+    const { diagnosis, message } = body;
+
+    // validation
+    if (!message || typeof message !== "string") {
+      return res.status(400).json({ error: "messageが必要です" });
     }
 
-    if (!diagnosis || typeof diagnosis !== 'object') {
-      return res.status(400).json({ error: 'diagnosisが必要です' })
+    if (!diagnosis || typeof diagnosis !== "object") {
+      return res.status(400).json({ error: "diagnosisが必要です" });
     }
 
     if (
@@ -36,19 +41,18 @@ module.exports = async (req, res) => {
       !diagnosis.nextAdvice ||
       !diagnosis.consultStyle
     ) {
-      return res.status(400).json({ error: 'diagnosisの形式が正しくありません' })
+      return res.status(400).json({ error: "diagnosisの形式が正しくありません" });
     }
 
-    // OpenAI APIキーの確認
-    const apiKey = process.env.OPENAI_API_KEY
+    // OpenAI API key
+    const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      return res.status(500).json({ error: 'OPENAI_API_KEYが設定されていません' })
+      return res.status(500).json({ error: "OPENAI_API_KEYが設定されていません" });
     }
 
-    // OpenAIクライアントの初期化
-    const openai = new OpenAI({ apiKey })
+    const openai = new OpenAI({ apiKey });
 
-    // システムプロンプト
+    // system prompt（君の文章をそのまま）
     const systemPrompt = `【相談AIの役割】
 
 あなたは、ユーザーが「仕事・キャリアについての悩み」に腹落ちする答えを見つけるための、《相談AI》です。
@@ -103,48 +107,42 @@ module.exports = async (req, res) => {
 
 ・診断結果のconsultStyle.toneに合わせる
 ・温かく穏やかだが、なあなあではなく論理的
-・「あなたなりの正解を一緒に探している」というスタンスで話す`
+・「あなたなりの正解を一緒に探している」というスタンスで話す`;
 
-    // ユーザーメッセージの構築
     const userMessage = `【診断結果】
 タイプ: ${diagnosis.type}
 スコア: ${JSON.stringify(diagnosis.scores)}
 概要: ${diagnosis.summary}
 アドバイス: ${diagnosis.nextAdvice}
 相談スタイル:
-- トーン: ${diagnosis.consultStyle.tone}
-- 優先事項: ${diagnosis.consultStyle.priorities.join(', ')}
-- 避けるべきこと: ${diagnosis.consultStyle.taboo.join(', ')}
+- トーン: ${diagnosis.consultStyle?.tone}
+- 優先事項: ${(diagnosis.consultStyle?.priorities ?? []).join(", ")}
+- 避けるべきこと: ${(diagnosis.consultStyle?.taboo ?? []).join(", ")}
 
 【ユーザーの相談内容】
 ${message}
 
 上記の診断結果を前提として、ユーザーの相談に応じてください。
 診断結果の価値観スコア、consultStyle（トーン・優先事項・避けるべきこと）を必ず反映してください。
-比較相談の場合は「判断軸→確認質問→暫定結論」の順で返答し、最後に追加質問を3つまで提示してください。`
+比較相談の場合は「判断軸→確認質問→暫定結論」の順で返答し、最後に追加質問を3つまで提示してください。`;
 
-    // OpenAI API呼び出し
     const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: "gpt-4o-mini",
       messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userMessage },
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userMessage },
       ],
       temperature: 0.7,
-    })
+    });
 
-    const reply = completion.choices[0]?.message?.content || ''
+    const reply = completion.choices?.[0]?.message?.content ?? "";
+    if (!reply) throw new Error("AIからの応答が空でした");
 
-    if (!reply) {
-      throw new Error('AIからの応答が空でした')
-    }
-
-    res.status(200).json({ reply })
+    return res.status(200).json({ reply });
   } catch (error) {
-    console.error('❌ 相談モード API error:', error)
-    res.status(500).json({
-      error: error.message || 'Internal server error',
-    })
+    console.error("❌ consult API error:", error);
+    return res.status(500).json({
+      error: error?.message || "Internal server error",
+    });
   }
 }
-
